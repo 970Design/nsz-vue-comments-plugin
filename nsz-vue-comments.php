@@ -2,7 +2,7 @@
 /**
  * Plugin Name: 970 Design Comments (Headless)
  * Description: Secure proxy endpoints for headless WordPress comments integration.
- * Version:     1.0
+ * Version:     1.0.1
  * Author:      970 Design
  * Author URI:  https://970design.com/
  * License:     GPLv2 or later
@@ -123,7 +123,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 		}
 
 		/**
-		 * Get comments for a post
+		 * Get comments for a post with hierarchical structure
 		 *
 		 * @param WP_REST_Request $request
 		 * @return WP_REST_Response|WP_Error
@@ -150,20 +150,91 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				'order'   => 'ASC',
 			] );
 
-			// Format comments
-			$formatted_comments = array_map( function( $comment ) {
-				return [
-					'id'           => $comment->comment_ID,
-					'post_id'      => $comment->comment_post_ID,
-					'author_name'  => $comment->comment_author,
-					'author_email' => $comment->comment_author_email,
-					'date'         => $comment->comment_date,
-					'content'      => wpautop( $comment->comment_content ),
-					'parent'       => $comment->comment_parent,
-				];
-			}, $comments );
+			// Count total comments
+			$comment_count = count( $comments );
 
-			return rest_ensure_response( $formatted_comments );
+			// Render comments using wp_list_comments
+			ob_start();
+
+			if ( ! empty( $comments ) ) {
+				wp_list_comments( [
+					'style'       => 'ol',
+					'short_ping'  => true,
+					'avatar_size' => 48,
+					'callback'    => [ $this, 'custom_comment_callback' ],
+				], $comments );
+			}
+
+			$rendered_comments = ob_get_clean();
+
+			return rest_ensure_response( [
+				'count'    => $comment_count,
+				'rendered' => $rendered_comments,
+			] );
+		}
+
+		/**
+		 * Custom comment callback for wp_list_comments
+		 *
+		 * @param WP_Comment $comment
+		 * @param array      $args
+		 * @param int        $depth
+		 */
+		public function custom_comment_callback( $comment, $args, $depth ) {
+			$tag = ( 'div' === $args['style'] ) ? 'div' : 'li';
+			?>
+			<<?php echo $tag; ?> id="comment-<?php comment_ID(); ?>" <?php comment_class( empty( $args['has_children'] ) ? '' : 'parent', $comment ); ?>>
+			<article id="div-comment-<?php comment_ID(); ?>" class="comment-body">
+				<footer class="comment-meta">
+					<div class="comment-author vcard">
+						<?php
+						if ( 0 != $args['avatar_size'] ) {
+							echo get_avatar( $comment, $args['avatar_size'] );
+						}
+						?>
+						<?php
+						printf(
+							'<b class="fn">%s</b> <span class="says">says:</span>',
+							get_comment_author_link( $comment )
+						);
+						?>
+					</div>
+
+					<div class="comment-metadata">
+						<a href="<?php echo esc_url( get_comment_link( $comment, $args ) ); ?>">
+							<?php
+							printf(
+								'%1$s at %2$s',
+								get_comment_date( '', $comment ),
+								get_comment_time()
+							);
+							?>
+						</a>
+						<?php edit_comment_link( 'Edit', '<span class="edit-link">', '</span>' ); ?>
+					</div>
+
+					<?php if ( '0' == $comment->comment_approved ) : ?>
+						<p class="comment-awaiting-moderation">Your comment is awaiting moderation.</p>
+					<?php endif; ?>
+				</footer>
+
+				<div class="comment-content">
+					<?php comment_text(); ?>
+				</div>
+
+				<div class="reply">
+					<?php
+					comment_reply_link( array_merge( $args, [
+						'add_below' => 'div-comment',
+						'depth'     => $depth,
+						'max_depth' => $args['max_depth'],
+						'before'    => '',
+						'after'     => '',
+					] ) );
+					?>
+				</div>
+			</article>
+			<?php
 		}
 
 		/**
@@ -192,6 +263,14 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 			$content      = sanitize_textarea_field( $request->get_param( 'content' ) );
 			$parent       = absint( $request->get_param( 'parent' ) );
 
+			// Validate parent comment exists if specified
+			if ( $parent > 0 ) {
+				$parent_comment = get_comment( $parent );
+				if ( ! $parent_comment || $parent_comment->comment_post_ID != $post_id ) {
+					return new WP_Error( 'invalid_parent', 'Invalid parent comment', [ 'status' => 400 ] );
+				}
+			}
+
 			// Validate required fields
 			if ( empty( $author_name ) || empty( $author_email ) || empty( $content ) ) {
 				return new WP_Error(
@@ -201,49 +280,47 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				);
 			}
 
-			// Validate email
 			if ( ! is_email( $author_email ) ) {
 				return new WP_Error( 'invalid_email', 'Invalid email address', [ 'status' => 400 ] );
 			}
 
-			// Get client IP
 			$ip = $this->get_client_ip();
+			$current_time = current_time( 'mysql' );
+			$current_time_gmt = current_time( 'mysql', 1 );
 
-			// Prepare comment data
+			// Prepare comment data with ALL required fields
 			$comment_data = [
 				'comment_post_ID'      => $post_id,
 				'comment_author'       => $author_name,
 				'comment_author_email' => $author_email,
+				'comment_author_url'   => '',
 				'comment_content'      => $content,
 				'comment_parent'       => $parent,
 				'comment_author_IP'    => $ip,
 				'comment_agent'        => $request->get_header( 'user-agent' ) ?: '',
-				'comment_date'         => current_time( 'mysql' ),
-				'comment_approved'     => 0, // Default to moderation
+				'comment_date'         => $current_time,
+				'comment_date_gmt'     => $current_time_gmt,
+				'comment_approved'     => 0,
+				'comment_type'         => '',
 			];
 
-			// Check if comment should be auto-approved
+			// Check approval status
 			$comment_data['comment_approved'] = wp_allow_comment( $comment_data );
 
 			// Insert comment
 			$comment_id = wp_insert_comment( $comment_data );
 
 			if ( ! $comment_id ) {
-				return new WP_Error(
-					'comment_failed',
-					'Failed to submit comment',
-					[ 'status' => 500 ]
-				);
+				return new WP_Error( 'comment_failed', 'Failed to submit comment', [ 'status' => 500 ] );
 			}
 
-			// Send notification emails
+			// Send notifications
 			if ( $comment_data['comment_approved'] == 1 ) {
 				wp_notify_postauthor( $comment_id );
 			} else {
 				wp_notify_moderator( $comment_id );
 			}
 
-			// Determine message
 			$message = $comment_data['comment_approved'] == 1
 				? 'Comment submitted successfully!'
 				: 'Comment submitted successfully! It is awaiting moderation.';
@@ -253,6 +330,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				'comment_id' => $comment_id,
 				'message'    => $message,
 				'approved'   => $comment_data['comment_approved'] == 1,
+				'parent'     => $parent
 			] );
 		}
 
