@@ -2,7 +2,7 @@
 /**
  * Plugin Name: 970 Design Headless Comments
  * Description: Secure proxy endpoints for headless WordPress comments integration.
- * Version:     1.1.0
+ * Version:     1.1.1
  * Author:      970 Design
  * Author URI:  https://970design.com/
  * License:     GPLv2 or later
@@ -147,7 +147,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				'post_id' => $post_id,
 				'status'  => 'approve',
 				'orderby' => 'comment_date',
-				'order'   => 'ASC',
+				'order'   => 'DESC',
 			] );
 
 			// Count total comments
