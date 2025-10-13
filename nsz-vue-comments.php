@@ -2,7 +2,7 @@
 /**
  * Plugin Name: 970 Design Headless Comments
  * Description: Secure proxy endpoints for headless WordPress comments integration.
- * Version:     1.1.2
+ * Version:     1.1.3
  * Author:      970 Design
  * Author URI:  https://970design.com/
  * License:     GPLv2 or later
@@ -305,6 +305,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 			$ip = $this->get_client_ip();
 			$current_time = current_time( 'mysql' );
 			$current_time_gmt = current_time( 'mysql', 1 );
+            $comments_must_be_manually_approved = get_option( 'comment_moderation' );
 
 			// Prepare comment data with ALL required fields
 			$comment_data = [
@@ -318,7 +319,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				'comment_agent'        => $request->get_header( 'user-agent' ) ?: '',
 				'comment_date'         => $current_time,
 				'comment_date_gmt'     => $current_time_gmt,
-				'comment_approved'     => 0,
+				'comment_approved'     => $comments_must_be_manually_approved,
 				'comment_type'         => '',
 			];
 
