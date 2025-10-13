@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: 970 Design Headless Comments
- * Description: Secure proxy endpoints for headless WordPress comments integration with reCAPTCHA v3 support.
- * Version:     1.1.1
+ * Description: Secure proxy endpoints for headless WordPress comments with Akismet spam protection and reCaptcha support.
+ * Version:     1.1.5
  * Author:      970 Design
  * Author URI:  https://970design.com/
  * License:     GPLv2 or later
@@ -55,6 +55,9 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 			}
 			if ( get_option( 'headless_comments_recaptcha_secret_key' ) === false ) {
 				update_option( 'headless_comments_recaptcha_secret_key', '' );
+			// Set default Akismet option
+			if ( get_option( 'headless_comments_use_akismet' ) === false ) {
+				update_option( 'headless_comments_use_akismet', '1' );
 			}
 		}
 
@@ -75,6 +78,15 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 							'required'          => true,
 							'type'              => 'integer',
 							'sanitize_callback' => 'absint',
+						],
+						'order' => [
+							'required'          => false,
+							'type'              => 'string',
+							'default'           => 'DESC',
+							'sanitize_callback' => 'sanitize_text_field',
+							'validate_callback' => function( $param ) {
+								return in_array( strtoupper( $param ), [ 'ASC', 'DESC' ], true );
+							},
 						],
 					],
 				]
@@ -220,12 +232,20 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				return new WP_Error( 'comments_closed', 'Comments are closed for this post', [ 'status' => 403 ] );
 			}
 
+			// Get order parameter (defaults to DESC if not provided)
+			$order = strtoupper( sanitize_text_field( $request->get_param( 'order' ) ) );
+
+			// Validate order parameter
+			if ( ! in_array( $order, [ 'ASC', 'DESC' ], true ) ) {
+				$order = 'DESC';
+			}
+
 			// Get approved comments
 			$comments = get_comments( [
 				'post_id' => $post_id,
 				'status'  => 'approve',
 				'orderby' => 'comment_date',
-				'order'   => 'ASC',
+				'order'   => $order,
 			] );
 
 			// Count total comments
@@ -248,6 +268,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 			return rest_ensure_response( [
 				'count'    => $comment_count,
 				'rendered' => $rendered_comments,
+				'order'    => $order,
 			] );
 		}
 
@@ -316,6 +337,80 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 		}
 
 		/**
+		 * Check if Akismet is active and configured
+		 *
+		 * @return bool
+		 */
+		private function is_akismet_active() {
+			if ( ! get_option( 'headless_comments_use_akismet', '1' ) ) {
+				return false;
+			}
+
+			// Check if Akismet class exists
+			if ( ! class_exists( 'Akismet' ) ) {
+				return false;
+			}
+
+			// Check if Akismet API key is configured
+			$api_key = defined( 'WPCOM_API_KEY' ) ? constant( 'WPCOM_API_KEY' ) : get_option( 'wordpress_api_key' );
+
+			return ! empty( $api_key );
+		}
+
+		/**
+		 * Check comment with Akismet
+		 *
+		 * @param array $comment_data Comment data array
+		 * @return string|false Returns 'spam' if spam detected, false if not spam or Akismet unavailable
+		 */
+		private function check_akismet( $comment_data ) {
+			if ( ! $this->is_akismet_active() ) {
+				return false;
+			}
+
+			// Prepare data for Akismet
+			$akismet_data = [
+				'blog'                 => get_option( 'home' ),
+				'user_ip'              => $comment_data['comment_author_IP'],
+				'user_agent'           => $comment_data['comment_agent'],
+				'referrer'             => isset( $_SERVER['HTTP_REFERER'] ) ? $_SERVER['HTTP_REFERER'] : '',
+				'permalink'            => get_permalink( $comment_data['comment_post_ID'] ),
+				'comment_type'         => $comment_data['comment_type'],
+				'comment_author'       => $comment_data['comment_author'],
+				'comment_author_email' => $comment_data['comment_author_email'],
+				'comment_author_url'   => $comment_data['comment_author_url'],
+				'comment_content'      => $comment_data['comment_content'],
+			];
+
+			// Add blog language
+			$akismet_data['blog_lang']     = get_locale();
+			$akismet_data['blog_charset']  = get_option( 'blog_charset' );
+
+			// Add comment parent if exists
+			if ( ! empty( $comment_data['comment_parent'] ) ) {
+				$akismet_data['comment_parent'] = $comment_data['comment_parent'];
+			}
+
+			// Check with Akismet
+			$response = Akismet::http_post(
+				Akismet::build_query( $akismet_data ),
+				'comment-check'
+			);
+
+			// Check if we got a valid response
+			if ( ! empty( $response[1] ) ) {
+				$response_body = trim( $response[1] );
+
+				if ( 'true' === $response_body ) {
+					// It's spam
+					return 'spam';
+				}
+			}
+
+			return false;
+		}
+
+		/**
 		 * Submit a comment
 		 *
 		 * @param WP_REST_Request $request
@@ -380,6 +475,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 			$ip = $this->get_client_ip();
 			$current_time = current_time( 'mysql' );
 			$current_time_gmt = current_time( 'mysql', 1 );
+            $comments_must_be_manually_approved = get_option( 'comment_moderation' );
 
 			// Prepare comment data with ALL required fields
 			$comment_data = [
@@ -393,11 +489,36 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				'comment_agent'        => $request->get_header( 'user-agent' ) ?: '',
 				'comment_date'         => $current_time,
 				'comment_date_gmt'     => $current_time_gmt,
-				'comment_approved'     => 0,
+				'comment_approved'     => $comments_must_be_manually_approved,
 				'comment_type'         => '',
 			];
 
-			// Check approval status
+			// Check with Akismet first
+			$akismet_result = $this->check_akismet( $comment_data );
+
+			if ( 'spam' === $akismet_result ) {
+				// Mark as spam
+				$comment_data['comment_approved'] = 'spam';
+
+				// Insert comment as spam
+				$comment_id = wp_insert_comment( $comment_data );
+
+				if ( ! $comment_id ) {
+					return new WP_Error( 'comment_failed', 'Failed to submit comment', [ 'status' => 500 ] );
+				}
+
+				// Add Akismet meta
+				add_comment_meta( $comment_id, 'akismet_result', 'spam' );
+
+				// Return spam error to user
+				return new WP_Error(
+					'spam_detected',
+					'Your comment has been identified as spam and cannot be posted.',
+					[ 'status' => 400 ]
+				);
+			}
+
+			// If not spam, check normal approval status
 			$comment_data['comment_approved'] = wp_allow_comment( $comment_data );
 
 			// Insert comment
@@ -405,6 +526,11 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 
 			if ( ! $comment_id ) {
 				return new WP_Error( 'comment_failed', 'Failed to submit comment', [ 'status' => 500 ] );
+			}
+
+			// Add Akismet meta if it was checked
+			if ( $this->is_akismet_active() ) {
+				add_comment_meta( $comment_id, 'akismet_result', 'ham' );
 			}
 
 			// Send notifications
@@ -560,6 +686,13 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 			register_setting( 'headless_comments_settings', 'headless_comments_recaptcha_secret_key', [
 				'sanitize_callback' => 'sanitize_text_field',
 			] );
+      
+      //akismet settings
+			register_setting( 'headless_comments_settings', 'headless_comments_use_akismet', [
+				'sanitize_callback' => function ( $val ) {
+					return $val ? '1' : '0';
+				},
+			] );
 		}
 
 		/**
@@ -571,9 +704,27 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 			$recaptcha_enabled  = get_option( 'headless_comments_recaptcha_enabled', '0' );
 			$recaptcha_site_key = get_option( 'headless_comments_recaptcha_site_key', '' );
 			$recaptcha_secret   = get_option( 'headless_comments_recaptcha_secret_key', '' );
+			$use_akismet     = get_option( 'headless_comments_use_akismet', '1' );
+			$akismet_active  = class_exists( 'Akismet' );
+			$akismet_api_key = defined( 'WPCOM_API_KEY' ) ? constant( 'WPCOM_API_KEY' ) : get_option( 'wordpress_api_key' );
 			?>
 			<div class="wrap">
 				<h1>Headless Comments API Settings</h1>
+
+				<?php if ( $use_akismet && ! $akismet_active ) : ?>
+					<div class="notice notice-warning">
+						<p><strong>Warning:</strong> Akismet spam protection is enabled but the Akismet plugin is not active. Please install and activate Akismet.</p>
+					</div>
+				<?php elseif ( $use_akismet && $akismet_active && empty( $akismet_api_key ) ) : ?>
+					<div class="notice notice-warning">
+						<p><strong>Warning:</strong> Akismet is active but not configured. Please configure your Akismet API key.</p>
+					</div>
+				<?php elseif ( $use_akismet && $this->is_akismet_active() ) : ?>
+					<div class="notice notice-success">
+						<p><strong>Success:</strong> Akismet spam protection is active and configured.</p>
+					</div>
+				<?php endif; ?>
+
 				<form method="post" action="options.php">
 					<?php settings_fields( 'headless_comments_settings' ); ?>
 					<table class="form-table">
@@ -589,6 +740,22 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 							<td>
 								<textarea name="headless_comments_allowed_origins" class="large-text" rows="4"><?php echo esc_textarea( $origins_raw ); ?></textarea>
 								<p class="description">One origin per line. Use * to allow all origins (not recommended for production). Example: http://localhost:4321</p>
+							</td>
+						</tr>
+						<tr>
+							<th scope="row">Akismet Spam Protection</th>
+							<td>
+								<label>
+									<input type="checkbox" name="headless_comments_use_akismet" value="1" <?php checked( $use_akismet, '1' ); ?>>
+									Enable Akismet spam checking for comments
+								</label>
+								<p class="description">
+									<?php if ( $akismet_active ) : ?>
+										Akismet plugin is installed. Comments will be automatically checked for spam before posting.
+									<?php else : ?>
+										Akismet plugin is not installed. <a href="<?php echo admin_url( 'plugin-install.php?s=akismet&tab=search&type=term' ); ?>">Install Akismet</a> to enable spam protection.
+									<?php endif; ?>
+								</p>
 							</td>
 						</tr>
 					</table>
@@ -637,6 +804,14 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 					<li><code>content</code> (required) - Comment content</li>
 					<li><code>parent</code> (optional) - Parent comment ID for replies</li>
 					<li><code>recaptcha_token</code> (required if reCAPTCHA enabled) - reCAPTCHA v3 token</li>
+				</ul>
+
+				<h3>Spam Protection</h3>
+				<p>When Akismet is enabled, all comments are automatically checked before being posted:</p>
+				<ul>
+					<li>Comments identified as spam are rejected and not stored in the database</li>
+					<li>The API returns a <code>spam_detected</code> error response</li>
+					<li>Clean comments proceed through normal WordPress comment moderation</li>
 				</ul>
 			</div>
 			<?php
