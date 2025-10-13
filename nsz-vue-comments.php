@@ -2,7 +2,7 @@
 /**
  * Plugin Name: 970 Design Headless Comments
  * Description: Secure proxy endpoints for headless WordPress comments integration with Akismet spam protection.
- * Version:     1.1.1
+ * Version:     1.1.4
  * Author:      970 Design
  * Author URI:  https://970design.com/
  * License:     GPLv2 or later
