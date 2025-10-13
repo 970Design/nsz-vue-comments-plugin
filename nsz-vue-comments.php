@@ -2,7 +2,7 @@
 /**
  * Plugin Name: 970 Design Headless Comments
  * Description: Secure proxy endpoints for headless WordPress comments integration.
- * Version:     1.1.0
+ * Version:     1.1.1
  * Author:      970 Design
  * Author URI:  https://970design.com/
  * License:     GPLv2 or later
@@ -64,6 +64,15 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 							'required'          => true,
 							'type'              => 'integer',
 							'sanitize_callback' => 'absint',
+						],
+						'order' => [
+							'required'          => false,
+							'type'              => 'string',
+							'default'           => 'DESC',
+							'sanitize_callback' => 'sanitize_text_field',
+							'validate_callback' => function( $param ) {
+								return in_array( strtoupper( $param ), [ 'ASC', 'DESC' ], true );
+							},
 						],
 					],
 				]
@@ -142,12 +151,20 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				return new WP_Error( 'comments_closed', 'Comments are closed for this post', [ 'status' => 403 ] );
 			}
 
+			// Get order parameter (defaults to DESC if not provided)
+			$order = strtoupper( sanitize_text_field( $request->get_param( 'order' ) ) );
+
+			// Validate order parameter
+			if ( ! in_array( $order, [ 'ASC', 'DESC' ], true ) ) {
+				$order = 'DESC';
+			}
+
 			// Get approved comments
 			$comments = get_comments( [
 				'post_id' => $post_id,
 				'status'  => 'approve',
 				'orderby' => 'comment_date',
-				'order'   => 'ASC',
+				'order'   => $order,
 			] );
 
 			// Count total comments
@@ -170,6 +187,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 			return rest_ensure_response( [
 				'count'    => $comment_count,
 				'rendered' => $rendered_comments,
+				'order'    => $order,
 			] );
 		}
 
