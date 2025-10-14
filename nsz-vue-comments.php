@@ -55,6 +55,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 			}
 			if ( get_option( 'headless_comments_recaptcha_secret_key' ) === false ) {
 				update_option( 'headless_comments_recaptcha_secret_key', '' );
+			}
 			// Set default Akismet option
 			if ( get_option( 'headless_comments_use_akismet' ) === false ) {
 				update_option( 'headless_comments_use_akismet', '1' );
@@ -333,6 +334,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 					?>
 				</div>
 			</article>
+			</<?php echo $tag; ?>>
 			<?php
 		}
 
@@ -373,7 +375,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				'blog'                 => get_option( 'home' ),
 				'user_ip'              => $comment_data['comment_author_IP'],
 				'user_agent'           => $comment_data['comment_agent'],
-				'referrer'             => isset( $_SERVER['HTTP_REFERER'] ) ? $_SERVER['HTTP_REFERER'] : '',
+				'referrer'             => isset( $_SERVER['HTTP_REFERER'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_REFERER'] ) ) : '',
 				'permalink'            => get_permalink( $comment_data['comment_post_ID'] ),
 				'comment_type'         => $comment_data['comment_type'],
 				'comment_author'       => $comment_data['comment_author'],
@@ -475,7 +477,6 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 			$ip = $this->get_client_ip();
 			$current_time = current_time( 'mysql' );
 			$current_time_gmt = current_time( 'mysql', 1 );
-            $comments_must_be_manually_approved = get_option( 'comment_moderation' );
 
 			// Prepare comment data with ALL required fields
 			$comment_data = [
@@ -489,7 +490,6 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				'comment_agent'        => $request->get_header( 'user-agent' ) ?: '',
 				'comment_date'         => $current_time,
 				'comment_date_gmt'     => $current_time_gmt,
-				'comment_approved'     => $comments_must_be_manually_approved,
 				'comment_type'         => '',
 			];
 
@@ -518,7 +518,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				);
 			}
 
-			// If not spam, check normal approval status
+			// Set approval status using WordPress core function
 			$comment_data['comment_approved'] = wp_allow_comment( $comment_data );
 
 			// Insert comment
@@ -535,9 +535,9 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 
 			// Send notifications
 			if ( $comment_data['comment_approved'] == 1 ) {
-				wp_notify_postauthor( $comment_id );
+				wp_new_comment_notify_postauthor( $comment_id );
 			} else {
-				wp_notify_moderator( $comment_id );
+				wp_new_comment_notify_moderator( $comment_id );
 			}
 
 			$message = $comment_data['comment_approved'] == 1
@@ -572,7 +572,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 
 			foreach ( $ip_headers as $header ) {
 				if ( ! empty( $_SERVER[ $header ] ) ) {
-					$ip = $_SERVER[ $header ];
+					$ip = sanitize_text_field( wp_unslash( $_SERVER[ $header ] ) );
 					if ( strpos( $ip, ',' ) !== false ) {
 						$ip = explode( ',', $ip )[0];
 					}
@@ -686,8 +686,8 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 			register_setting( 'headless_comments_settings', 'headless_comments_recaptcha_secret_key', [
 				'sanitize_callback' => 'sanitize_text_field',
 			] );
-      
-      //akismet settings
+
+			//akismet settings
 			register_setting( 'headless_comments_settings', 'headless_comments_use_akismet', [
 				'sanitize_callback' => function ( $val ) {
 					return $val ? '1' : '0';
