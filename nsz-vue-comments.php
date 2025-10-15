@@ -2,7 +2,7 @@
 /**
  * Plugin Name: 970 Design Headless Comments
  * Description: Secure proxy endpoints for headless WordPress comments with Akismet spam protection and reCaptcha support.
- * Version:     1.1.5
+ * Version:     1.2.1
  * Author:      970 Design
  * Author URI:  https://970design.com/
  * License:     GPLv2 or later
@@ -845,3 +845,15 @@ add_action( 'plugins_loaded', function () {
 
 // Activation hook
 register_activation_hook( __FILE__, [ 'Headless_Comments_API', 'activate' ] );
+
+require 'plugin-update-checker/plugin-update-checker.php';
+use YahnisElsts\PluginUpdateChecker\v5\PucFactory;
+
+$myUpdateChecker = PucFactory::buildUpdateChecker(
+        'https://github.com/970Design/nsz-vue-comments-plugin',
+        __FILE__,
+        'nsz-vue-comments-plugin'
+);
+
+//Set the branch that contains the stable release.
+$myUpdateChecker->setBranch('main');
