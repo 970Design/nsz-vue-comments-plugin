@@ -1,10 +1,11 @@
 # 970 Design Headless Comments
 
-Secure REST API endpoints for managing WordPress comments in headless applications.
+Secure REST API endpoints for managing WordPress comments in headless applications with optional reCAPTCHA v3 spam protection.
 
 ## Features
 
 - Secure API key authentication
+- **Optional reCAPTCHA v3 spam protection**
 - CORS support for headless apps
 - Fetch approved comments
 - Submit new comments
@@ -29,18 +30,31 @@ http://localhost:4321
 https://example.com
 ```
 
+### reCAPTCHA v3 (Optional)
+1. Get keys from [Google reCAPTCHA Admin](https://www.google.com/recaptcha/admin)
+2. Select **reCAPTCHA v3** when registering
+3. Add your **Site Key** and **Secret Key** in plugin settings
+4. Enable the checkbox to activate verification
+
 ## API Endpoints
 
 Base URL: `{your-wp-site}/wp-json/headless-comments/v1`
 
-Authentication via header: `X-API-Key: your_api_key`
+Authentication: `X-API-Key: your_api_key` header
+
+### GET reCAPTCHA Config
+```
+GET /recaptcha/config
+```
+
+Returns whether reCAPTCHA is enabled and the site key.
 
 ### GET Comments
 ```
 GET /posts/{post_id}/comments
 ```
 
-Returns array of approved comments.
+Returns approved comments with rendered HTML.
 
 ### POST Comment
 ```
@@ -51,63 +65,80 @@ Content-Type: application/json
   "author_name": "John Doe",
   "author_email": "john@example.com",
   "content": "Great post!",
-  "parent": 0
+  "parent": 0,
+  "recaptcha_token": "token-from-google-recaptcha"
 }
 ```
 
-Returns:
-```json
-{
-  "success": true,
-  "comment_id": 123,
-  "message": "Comment submitted successfully!",
-  "approved": true
-}
+**Note:** `recaptcha_token` is required only when reCAPTCHA is enabled.
+
+## Frontend Implementation
+
+### Basic Usage
+
+```javascript
+// Fetch comments
+const comments = await fetch(
+  `${endpoint}/wp-json/headless-comments/v1/posts/${postId}/comments`,
+  { headers: { 'X-API-Key': apiKey } }
+).then(res => res.json());
+
+// Submit comment
+const result = await fetch(
+  `${endpoint}/wp-json/headless-comments/v1/posts/${postId}/comments`,
+  {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': apiKey
+    },
+    body: JSON.stringify({
+      author_name: 'John Doe',
+      author_email: 'john@example.com',
+      content: 'Great post!'
+    })
+  }
+).then(res => res.json());
 ```
 
-## Frontend Example
+### With reCAPTCHA v3
 
-```vue
-<script setup>
-const fetchComments = async () => {
-  const response = await fetch(
-    `${endpoint}/wp-json/headless-comments/v1/posts/${postId}/comments`,
-    { headers: { 'X-API-Key': apiKey } }
-  );
-  return await response.json();
-};
+```javascript
+// 1. Check if reCAPTCHA is enabled
+const config = await fetch(
+  `${endpoint}/wp-json/headless-comments/v1/recaptcha/config`,
+  { headers: { 'X-API-Key': apiKey } }
+).then(res => res.json());
 
-const submitComment = async (data) => {
-  const response = await fetch(
-    `${endpoint}/wp-json/headless-comments/v1/posts/${postId}/comments`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-Key': apiKey
-      },
-      body: JSON.stringify(data)
-    }
-  );
-  return await response.json();
-};
-</script>
+// 2. Load reCAPTCHA script (in your HTML)
+// <script src="https://www.google.com/recaptcha/api.js?render=YOUR_SITE_KEY"></script>
+
+// 3. Generate token and submit
+if (config.enabled) {
+  const token = await grecaptcha.execute(config.site_key, { action: 'submit' });
+  // Include token in your comment submission
+  body: JSON.stringify({
+    author_name: 'John Doe',
+    author_email: 'john@example.com',
+    content: 'Great post!',
+    recaptcha_token: token
+  })
+}
 ```
 
 ## Environment Variables
 
-```
+```env
 COMMENTS_API_KEY=your_api_key_from_wordpress
 WP_ENDPOINT=https://your-wordpress-site.com
 ```
 
 ## Troubleshooting
 
-**CORS errors:** Add your domain to Allowed Origins in plugin settings
-
-**401 errors:** Verify API key matches the one in WordPress settings
-
-**Comments not appearing:** Check if comments are approved in WordPress admin
+- **CORS errors:** Add your domain to Allowed Origins in plugin settings
+- **401 errors:** Verify API key matches WordPress settings
+- **reCAPTCHA errors:** Check site key, secret key, and domain registration
+- **Comments not appearing:** Check if comments are approved in WordPress admin
 
 ## License
 

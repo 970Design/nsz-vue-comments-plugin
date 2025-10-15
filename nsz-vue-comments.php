@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: 970 Design Headless Comments
- * Description: Secure proxy endpoints for headless WordPress comments integration with Akismet spam protection.
- * Version:     1.2.0
+ * Description: Secure proxy endpoints for headless WordPress comments with Akismet spam protection and reCaptcha support.
+ * Version:     1.2.1
  * Author:      970 Design
  * Author URI:  https://970design.com/
  * License:     GPLv2 or later
@@ -46,6 +46,16 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				update_option( 'headless_comments_allowed_origins', "http://localhost:4321\nhttp://localhost" );
 			}
 
+			// Initialize reCAPTCHA settings
+			if ( get_option( 'headless_comments_recaptcha_enabled' ) === false ) {
+				update_option( 'headless_comments_recaptcha_enabled', '0' );
+			}
+			if ( get_option( 'headless_comments_recaptcha_site_key' ) === false ) {
+				update_option( 'headless_comments_recaptcha_site_key', '' );
+			}
+			if ( get_option( 'headless_comments_recaptcha_secret_key' ) === false ) {
+				update_option( 'headless_comments_recaptcha_secret_key', '' );
+			}
 			// Set default Akismet option
 			if ( get_option( 'headless_comments_use_akismet' ) === false ) {
 				update_option( 'headless_comments_use_akismet', '1' );
@@ -100,6 +110,17 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 					],
 				]
 			);
+
+			// Get reCAPTCHA configuration (public endpoint)
+			register_rest_route(
+				$this->api_namespace,
+				'/recaptcha/config',
+				[
+					'methods'             => 'GET',
+					'callback'            => [ $this, 'get_recaptcha_config' ],
+					'permission_callback' => [ $this, 'check_api_permission' ],
+				]
+			);
 		}
 
 		/**
@@ -134,6 +155,62 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 			}
 
 			return true;
+		}
+
+		/**
+		 * Get reCAPTCHA configuration
+		 *
+		 * @param WP_REST_Request $request
+		 * @return WP_REST_Response
+		 */
+		public function get_recaptcha_config( $request ) {
+			$enabled = get_option( 'headless_comments_recaptcha_enabled', '0' ) === '1';
+			$site_key = get_option( 'headless_comments_recaptcha_site_key', '' );
+
+			return rest_ensure_response( [
+				'enabled'  => $enabled,
+				'site_key' => $enabled ? $site_key : '',
+			] );
+		}
+
+		/**
+		 * Verify reCAPTCHA token
+		 *
+		 * @param string $token
+		 * @return array|WP_Error
+		 */
+		private function verify_recaptcha( $token ) {
+			$secret_key = get_option( 'headless_comments_recaptcha_secret_key', '' );
+
+			if ( empty( $secret_key ) ) {
+				return new WP_Error( 'recaptcha_config_error', 'reCAPTCHA secret key not configured', [ 'status' => 500 ] );
+			}
+
+			$response = wp_remote_post( 'https://www.google.com/recaptcha/api/siteverify', [
+				'body' => [
+					'secret'   => $secret_key,
+					'response' => $token,
+					'remoteip' => $this->get_client_ip(),
+				],
+			] );
+
+			if ( is_wp_error( $response ) ) {
+				return new WP_Error( 'recaptcha_request_failed', 'Failed to verify reCAPTCHA', [ 'status' => 500 ] );
+			}
+
+			$body = wp_remote_retrieve_body( $response );
+			$result = json_decode( $body, true );
+
+			if ( ! isset( $result['success'] ) || ! $result['success'] ) {
+				$error_codes = isset( $result['error-codes'] ) ? implode( ', ', $result['error-codes'] ) : 'Unknown error';
+				return new WP_Error( 'recaptcha_verification_failed', 'reCAPTCHA verification failed: ' . $error_codes, [ 'status' => 400 ] );
+			}
+
+			return [
+				'success' => true,
+				'score'   => isset( $result['score'] ) ? (float) $result['score'] : 0,
+				'action'  => isset( $result['action'] ) ? $result['action'] : '',
+			];
 		}
 
 		/**
@@ -257,6 +334,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 					?>
 				</div>
 			</article>
+			</<?php echo $tag; ?>>
 			<?php
 		}
 
@@ -297,7 +375,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				'blog'                 => get_option( 'home' ),
 				'user_ip'              => $comment_data['comment_author_IP'],
 				'user_agent'           => $comment_data['comment_agent'],
-				'referrer'             => isset( $_SERVER['HTTP_REFERER'] ) ? $_SERVER['HTTP_REFERER'] : '',
+				'referrer'             => isset( $_SERVER['HTTP_REFERER'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_REFERER'] ) ) : '',
 				'permalink'            => get_permalink( $comment_data['comment_post_ID'] ),
 				'comment_type'         => $comment_data['comment_type'],
 				'comment_author'       => $comment_data['comment_author'],
@@ -354,6 +432,21 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				return new WP_Error( 'comments_closed', 'Comments are closed for this post', [ 'status' => 403 ] );
 			}
 
+			// Verify reCAPTCHA if enabled
+			$recaptcha_enabled = get_option( 'headless_comments_recaptcha_enabled', '0' ) === '1';
+			if ( $recaptcha_enabled ) {
+				$recaptcha_token = $request->get_param( 'recaptcha_token' );
+
+				if ( empty( $recaptcha_token ) ) {
+					return new WP_Error( 'recaptcha_missing', 'reCAPTCHA token is required', [ 'status' => 400 ] );
+				}
+
+				$verification = $this->verify_recaptcha( $recaptcha_token );
+				if ( is_wp_error( $verification ) ) {
+					return $verification;
+				}
+			}
+
 			// Get comment data
 			$author_name  = sanitize_text_field( $request->get_param( 'author_name' ) );
 			$author_email = sanitize_email( $request->get_param( 'author_email' ) );
@@ -384,7 +477,6 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 			$ip = $this->get_client_ip();
 			$current_time = current_time( 'mysql' );
 			$current_time_gmt = current_time( 'mysql', 1 );
-            $comments_must_be_manually_approved = get_option( 'comment_moderation' );
 
 			// Prepare comment data with ALL required fields
 			$comment_data = [
@@ -398,7 +490,6 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				'comment_agent'        => $request->get_header( 'user-agent' ) ?: '',
 				'comment_date'         => $current_time,
 				'comment_date_gmt'     => $current_time_gmt,
-				'comment_approved'     => $comments_must_be_manually_approved,
 				'comment_type'         => '',
 			];
 
@@ -427,7 +518,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				);
 			}
 
-			// If not spam, check normal approval status
+			// Set approval status using WordPress core function
 			$comment_data['comment_approved'] = wp_allow_comment( $comment_data );
 
 			// Insert comment
@@ -444,9 +535,9 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 
 			// Send notifications
 			if ( $comment_data['comment_approved'] == 1 ) {
-				wp_notify_postauthor( $comment_id );
+				wp_new_comment_notify_postauthor( $comment_id );
 			} else {
-				wp_notify_moderator( $comment_id );
+				wp_new_comment_notify_moderator( $comment_id );
 			}
 
 			$message = $comment_data['comment_approved'] == 1
@@ -481,7 +572,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 
 			foreach ( $ip_headers as $header ) {
 				if ( ! empty( $_SERVER[ $header ] ) ) {
-					$ip = $_SERVER[ $header ];
+					$ip = sanitize_text_field( wp_unslash( $_SERVER[ $header ] ) );
 					if ( strpos( $ip, ',' ) !== false ) {
 						$ip = explode( ',', $ip )[0];
 					}
@@ -581,6 +672,22 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				},
 			] );
 
+			// reCAPTCHA settings
+			register_setting( 'headless_comments_settings', 'headless_comments_recaptcha_enabled', [
+				'sanitize_callback' => function ( $val ) {
+					return $val === '1' ? '1' : '0';
+				},
+			] );
+
+			register_setting( 'headless_comments_settings', 'headless_comments_recaptcha_site_key', [
+				'sanitize_callback' => 'sanitize_text_field',
+			] );
+
+			register_setting( 'headless_comments_settings', 'headless_comments_recaptcha_secret_key', [
+				'sanitize_callback' => 'sanitize_text_field',
+			] );
+
+			//akismet settings
 			register_setting( 'headless_comments_settings', 'headless_comments_use_akismet', [
 				'sanitize_callback' => function ( $val ) {
 					return $val ? '1' : '0';
@@ -592,8 +699,11 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 		 * Admin page
 		 */
 		public function admin_page() {
-			$api_key         = get_option( 'headless_comments_api_key', '' );
-			$origins_raw     = get_option( 'headless_comments_allowed_origins', "http://localhost:4321" );
+			$api_key            = get_option( 'headless_comments_api_key', '' );
+			$origins_raw        = get_option( 'headless_comments_allowed_origins', "http://localhost:4321" );
+			$recaptcha_enabled  = get_option( 'headless_comments_recaptcha_enabled', '0' );
+			$recaptcha_site_key = get_option( 'headless_comments_recaptcha_site_key', '' );
+			$recaptcha_secret   = get_option( 'headless_comments_recaptcha_secret_key', '' );
 			$use_akismet     = get_option( 'headless_comments_use_akismet', '1' );
 			$akismet_active  = class_exists( 'Akismet' );
 			$akismet_api_key = defined( 'WPCOM_API_KEY' ) ? constant( 'WPCOM_API_KEY' ) : get_option( 'wordpress_api_key' );
@@ -649,12 +759,42 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 							</td>
 						</tr>
 					</table>
+
+					<h2>reCAPTCHA v3 Settings (Optional)</h2>
+					<table class="form-table">
+						<tr>
+							<th scope="row">Enable reCAPTCHA v3</th>
+							<td>
+								<label>
+									<input type="checkbox" name="headless_comments_recaptcha_enabled" value="1" <?php checked( $recaptcha_enabled, '1' ); ?>>
+									Enable spam protection with Google reCAPTCHA v3
+								</label>
+								<p class="description">Get your keys from <a href="https://www.google.com/recaptcha/admin" target="_blank">Google reCAPTCHA Admin</a></p>
+							</td>
+						</tr>
+						<tr>
+							<th scope="row">Site Key</th>
+							<td>
+								<input type="text" name="headless_comments_recaptcha_site_key" value="<?php echo esc_attr( $recaptcha_site_key ); ?>" class="regular-text">
+								<p class="description">Your reCAPTCHA v3 site key (public key)</p>
+							</td>
+						</tr>
+						<tr>
+							<th scope="row">Secret Key</th>
+							<td>
+								<input type="text" name="headless_comments_recaptcha_secret_key" value="<?php echo esc_attr( $recaptcha_secret ); ?>" class="regular-text">
+								<p class="description">Your reCAPTCHA v3 secret key (keep this private)</p>
+							</td>
+						</tr>
+					</table>
+
 					<?php submit_button(); ?>
 				</form>
 
 				<h2>API Endpoints</h2>
 				<p><strong>Get Comments:</strong> <code>GET /wp-json/headless-comments/v1/posts/{post_id}/comments</code></p>
 				<p><strong>Submit Comment:</strong> <code>POST /wp-json/headless-comments/v1/posts/{post_id}/comments</code></p>
+				<p><strong>Get reCAPTCHA Config:</strong> <code>GET /wp-json/headless-comments/v1/recaptcha/config</code></p>
 				<p><strong>Note:</strong> All endpoints require a valid API key via the <code>X-API-Key</code> header or <code>api_key</code> parameter.</p>
 
 				<h3>POST Parameters for Submit Comment</h3>
@@ -663,6 +803,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 					<li><code>author_email</code> (required) - Comment author email</li>
 					<li><code>content</code> (required) - Comment content</li>
 					<li><code>parent</code> (optional) - Parent comment ID for replies</li>
+					<li><code>recaptcha_token</code> (required if reCAPTCHA enabled) - reCAPTCHA v3 token</li>
 				</ul>
 
 				<h3>Spam Protection</h3>
