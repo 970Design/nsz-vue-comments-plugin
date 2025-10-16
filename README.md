@@ -33,7 +33,7 @@ https://example.com
 ### reCAPTCHA v3 (Optional)
 1. Get keys from [Google reCAPTCHA Admin](https://www.google.com/recaptcha/admin)
 2. Select **reCAPTCHA v3** when registering
-3. Add your **Site Key** and **Secret Key** in plugin settings
+3. Add your **Site Key** in plugin settings
 4. Enable the checkbox to activate verification
 
 ## API Endpoints

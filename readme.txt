@@ -45,7 +45,7 @@ Secure proxy endpoints for headless WordPress comments integration with reCAPTCH
 
 5. Configure your allowed origins (one per line).
 
-6. (Optional) Enable reCAPTCHA v3 and add your site key and secret key from [Google reCAPTCHA Admin](https://www.google.com/recaptcha/admin).
+6. (Optional) Enable reCAPTCHA v3 and add your site key from [Google reCAPTCHA Admin](https://www.google.com/recaptcha/admin).
 
 7. Save your settings.
 
@@ -128,7 +128,7 @@ Use `*` to allow all origins (not recommended for production).
 Enable spam protection with Google reCAPTCHA v3:
 1. Get your keys from [Google reCAPTCHA Admin](https://www.google.com/recaptcha/admin)
 2. Select reCAPTCHA v3
-3. Add your site key (public key) and secret key (private key) in plugin settings
+3. Add your site key (public key) in plugin settings
 4. Enable the checkbox to activate reCAPTCHA verification
 
 **CORS Settings**
@@ -144,8 +144,8 @@ Yes, all endpoints require API key authentication via the `X-API-Key` header. Ad
 = How do I set up reCAPTCHA v3? =
 1. Visit [Google reCAPTCHA Admin](https://www.google.com/recaptcha/admin)
 2. Register your site and select reCAPTCHA v3
-3. Copy the site key and secret key
-4. Add them to plugin settings under **Settings > Headless Comments**
+3. Copy the site key
+4. Add it to plugin settings under **Settings > Headless Comments**
 5. Enable the reCAPTCHA checkbox
 6. In your frontend, load the reCAPTCHA script and generate tokens before submitting comments
 
