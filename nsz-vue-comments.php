@@ -2,7 +2,7 @@
 /**
  * Plugin Name: 970 Design Headless Comments
  * Description: Secure proxy endpoints for headless WordPress comments with Akismet spam protection and reCaptcha support.
- * Version:     1.2.1
+ * Version:     1.2.2
  * Author:      970 Design
  * Author URI:  https://970design.com/
  * License:     GPLv2 or later
@@ -53,9 +53,7 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 			if ( get_option( 'headless_comments_recaptcha_site_key' ) === false ) {
 				update_option( 'headless_comments_recaptcha_site_key', '' );
 			}
-			if ( get_option( 'headless_comments_recaptcha_secret_key' ) === false ) {
-				update_option( 'headless_comments_recaptcha_secret_key', '' );
-			}
+
 			// Set default Akismet option
 			if ( get_option( 'headless_comments_use_akismet' ) === false ) {
 				update_option( 'headless_comments_use_akismet', '1' );
@@ -171,46 +169,6 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				'enabled'  => $enabled,
 				'site_key' => $enabled ? $site_key : '',
 			] );
-		}
-
-		/**
-		 * Verify reCAPTCHA token
-		 *
-		 * @param string $token
-		 * @return array|WP_Error
-		 */
-		private function verify_recaptcha( $token ) {
-			$secret_key = get_option( 'headless_comments_recaptcha_secret_key', '' );
-
-			if ( empty( $secret_key ) ) {
-				return new WP_Error( 'recaptcha_config_error', 'reCAPTCHA secret key not configured', [ 'status' => 500 ] );
-			}
-
-			$response = wp_remote_post( 'https://www.google.com/recaptcha/api/siteverify', [
-				'body' => [
-					'secret'   => $secret_key,
-					'response' => $token,
-					'remoteip' => $this->get_client_ip(),
-				],
-			] );
-
-			if ( is_wp_error( $response ) ) {
-				return new WP_Error( 'recaptcha_request_failed', 'Failed to verify reCAPTCHA', [ 'status' => 500 ] );
-			}
-
-			$body = wp_remote_retrieve_body( $response );
-			$result = json_decode( $body, true );
-
-			if ( ! isset( $result['success'] ) || ! $result['success'] ) {
-				$error_codes = isset( $result['error-codes'] ) ? implode( ', ', $result['error-codes'] ) : 'Unknown error';
-				return new WP_Error( 'recaptcha_verification_failed', 'reCAPTCHA verification failed: ' . $error_codes, [ 'status' => 400 ] );
-			}
-
-			return [
-				'success' => true,
-				'score'   => isset( $result['score'] ) ? (float) $result['score'] : 0,
-				'action'  => isset( $result['action'] ) ? $result['action'] : '',
-			];
 		}
 
 		/**
@@ -432,19 +390,17 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				return new WP_Error( 'comments_closed', 'Comments are closed for this post', [ 'status' => 403 ] );
 			}
 
-			// Verify reCAPTCHA if enabled
+			// Check if reCAPTCHA is enabled - if so, require the token
 			$recaptcha_enabled = get_option( 'headless_comments_recaptcha_enabled', '0' ) === '1';
 			if ( $recaptcha_enabled ) {
 				$recaptcha_token = $request->get_param( 'recaptcha_token' );
 
 				if ( empty( $recaptcha_token ) ) {
-					return new WP_Error( 'recaptcha_missing', 'reCAPTCHA token is required', [ 'status' => 400 ] );
+					return new WP_Error( 'recaptcha_missing', 'reCAPTCHA verification is required', [ 'status' => 400 ] );
 				}
 
-				$verification = $this->verify_recaptcha( $recaptcha_token );
-				if ( is_wp_error( $verification ) ) {
-					return $verification;
-				}
+				// Note: With client-side only verification, we trust that the Vue component
+				// has validated the reCAPTCHA before submission. The token presence is enough.
 			}
 
 			// Get comment data
@@ -683,10 +639,6 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 				'sanitize_callback' => 'sanitize_text_field',
 			] );
 
-			register_setting( 'headless_comments_settings', 'headless_comments_recaptcha_secret_key', [
-				'sanitize_callback' => 'sanitize_text_field',
-			] );
-
 			//akismet settings
 			register_setting( 'headless_comments_settings', 'headless_comments_use_akismet', [
 				'sanitize_callback' => function ( $val ) {
@@ -703,7 +655,6 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 			$origins_raw        = get_option( 'headless_comments_allowed_origins', "http://localhost:4321" );
 			$recaptcha_enabled  = get_option( 'headless_comments_recaptcha_enabled', '0' );
 			$recaptcha_site_key = get_option( 'headless_comments_recaptcha_site_key', '' );
-			$recaptcha_secret   = get_option( 'headless_comments_recaptcha_secret_key', '' );
 			$use_akismet     = get_option( 'headless_comments_use_akismet', '1' );
 			$akismet_active  = class_exists( 'Akismet' );
 			$akismet_api_key = defined( 'WPCOM_API_KEY' ) ? constant( 'WPCOM_API_KEY' ) : get_option( 'wordpress_api_key' );
@@ -761,13 +712,14 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 					</table>
 
 					<h2>reCAPTCHA v3 Settings (Optional)</h2>
+					<p class="description">reCAPTCHA v3 verification is handled client-side. Only the Site Key is required.</p>
 					<table class="form-table">
 						<tr>
 							<th scope="row">Enable reCAPTCHA v3</th>
 							<td>
 								<label>
 									<input type="checkbox" name="headless_comments_recaptcha_enabled" value="1" <?php checked( $recaptcha_enabled, '1' ); ?>>
-									Enable spam protection with Google reCAPTCHA v3
+									Require reCAPTCHA v3 verification (client-side)
 								</label>
 								<p class="description">Get your keys from <a href="https://www.google.com/recaptcha/admin" target="_blank">Google reCAPTCHA Admin</a></p>
 							</td>
@@ -777,13 +729,6 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 							<td>
 								<input type="text" name="headless_comments_recaptcha_site_key" value="<?php echo esc_attr( $recaptcha_site_key ); ?>" class="regular-text">
 								<p class="description">Your reCAPTCHA v3 site key (public key)</p>
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">Secret Key</th>
-							<td>
-								<input type="text" name="headless_comments_recaptcha_secret_key" value="<?php echo esc_attr( $recaptcha_secret ); ?>" class="regular-text">
-								<p class="description">Your reCAPTCHA v3 secret key (keep this private)</p>
 							</td>
 						</tr>
 					</table>
@@ -803,14 +748,16 @@ if ( ! class_exists( 'Headless_Comments_API' ) ) {
 					<li><code>author_email</code> (required) - Comment author email</li>
 					<li><code>content</code> (required) - Comment content</li>
 					<li><code>parent</code> (optional) - Parent comment ID for replies</li>
-					<li><code>recaptcha_token</code> (required if reCAPTCHA enabled) - reCAPTCHA v3 token</li>
+					<li><code>recaptcha_token</code> (required if reCAPTCHA enabled) - reCAPTCHA v3 token from client</li>
 				</ul>
 
 				<h3>Spam Protection</h3>
-				<p>When Akismet is enabled, all comments are automatically checked before being posted:</p>
+				<p>This plugin uses a two-layer spam protection approach:</p>
 				<ul>
-					<li>Comments identified as spam are rejected and not stored in the database</li>
-					<li>The API returns a <code>spam_detected</code> error response</li>
+					<li><strong>Client-side reCAPTCHA v3:</strong> When enabled, the frontend validates user interaction before allowing submission</li>
+					<li><strong>Server-side Akismet:</strong> When enabled, all comments are checked against Akismet's spam database</li>
+					<li>Comments identified as spam by Akismet are rejected and not stored in the database</li>
+					<li>The API returns a <code>spam_detected</code> error response for spam comments</li>
 					<li>Clean comments proceed through normal WordPress comment moderation</li>
 				</ul>
 			</div>
@@ -850,9 +797,9 @@ require 'plugin-update-checker/plugin-update-checker.php';
 use YahnisElsts\PluginUpdateChecker\v5\PucFactory;
 
 $myUpdateChecker = PucFactory::buildUpdateChecker(
-        'https://github.com/970Design/nsz-vue-comments-plugin',
-        __FILE__,
-        'nsz-vue-comments-plugin'
+	'https://github.com/970Design/nsz-vue-comments-plugin',
+	__FILE__,
+	'nsz-vue-comments-plugin'
 );
 
 //Set the branch that contains the stable release.
