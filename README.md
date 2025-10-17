@@ -36,6 +36,10 @@ https://example.com
 3. Add your **Site Key** in plugin settings
 4. Enable the checkbox to activate verification
 
+## Integrations
+
+If you're using Vue in your project, you can take advantage of our [Vue Comments Component](https://www.npmjs.com/package/@970design/vue-comments) - which will seamlessly integrate with this plugin.
+
 ## API Endpoints
 
 Base URL: `{your-wp-site}/wp-json/headless-comments/v1`
