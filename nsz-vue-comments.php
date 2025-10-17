@@ -793,14 +793,4 @@ add_action( 'plugins_loaded', function () {
 // Activation hook
 register_activation_hook( __FILE__, [ 'Headless_Comments_API', 'activate' ] );
 
-require 'plugin-update-checker/plugin-update-checker.php';
-use YahnisElsts\PluginUpdateChecker\v5\PucFactory;
 
-$myUpdateChecker = PucFactory::buildUpdateChecker(
-	'https://github.com/970Design/nsz-vue-comments-plugin',
-	__FILE__,
-	'nsz-vue-comments-plugin'
-);
-
-//Set the branch that contains the stable release.
-$myUpdateChecker->setBranch('main');
